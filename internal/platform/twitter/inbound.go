@@ -2,7 +2,10 @@ package twitter
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/andrinoff/xmbbridge/internal/model"
@@ -13,6 +16,13 @@ import (
 
 // maxResults is the largest page the timeline endpoint accepts.
 const maxResults = 100
+
+// humanActionPause is how long the listener rests after the API refuses a
+// request for a reason retrying cannot fix: exhausted credits, revoked
+// credentials, or a tier that does not include the endpoint. Without this the
+// poll loop would retry every few minutes and fill the logs while a person
+// tops up credits or fixes a token.
+const humanActionPause = time.Hour
 
 // Run polls the account's tweet timeline and emits each new tweet. It blocks
 // until the context is cancelled.
@@ -69,7 +79,11 @@ func (a *Adapter) poll(ctx context.Context, sink chan<- model.Post) (time.Durati
 
 	response, err := a.client.UserTweetTimeline(ctx, a.userID, opts)
 	if err != nil {
-		return 0, fmt.Errorf("twitter: fetch timeline: %w", err)
+		wrapped := fmt.Errorf("twitter: fetch timeline: %w", err)
+		if pause := pauseForRefusal(err, a.log); pause > 0 {
+			return pause, wrapped
+		}
+		return 0, wrapped
 	}
 
 	// Park until the rate limit window resets rather than immediately burning
@@ -131,4 +145,69 @@ func (a *Adapter) poll(ctx context.Context, sink chan<- model.Post) (time.Durati
 		}
 	}
 	return wait, nil
+}
+
+// statusFromError digs the HTTP status code out of the error shapes the
+// library returns: *ErrorResponse for decoded API errors and *HTTPError when
+// the body could not be decoded.
+func statusFromError(err error) (int, bool) {
+	var apiErr *tw.ErrorResponse
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode, true
+	}
+	var httpErr *tw.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode, true
+	}
+	var httpVal tw.HTTPError
+	if errors.As(err, &httpVal) {
+		return httpVal.StatusCode, true
+	}
+	return 0, false
+}
+
+// refusalHint describes an HTTP status that retrying cannot fix. Reads hit it
+// when credits run out or a tier lacks an endpoint; writes hit it for the same
+// reasons plus permission problems.
+func refusalHint(status int) (string, bool) {
+	switch status {
+	case http.StatusPaymentRequired:
+		return "API credits are exhausted; top up at developer.x.com", true
+	case http.StatusUnauthorized:
+		return "the credentials were rejected", true
+	case http.StatusForbidden:
+		return "the API tier or app permissions may not allow this request", true
+	default:
+		return "", false
+	}
+}
+
+// pauseForRefusal returns a long rest when the API refused the request for a
+// reason only a person can fix, and zero when retrying is reasonable.
+func pauseForRefusal(err error, log *slog.Logger) time.Duration {
+	status, ok := statusFromError(err)
+	if !ok {
+		return 0
+	}
+	hint, refused := refusalHint(status)
+	if !refused {
+		return 0
+	}
+	log.Error("twitter: the API refused the request; pausing the listener",
+		"status", status,
+		"resume_in", humanActionPause.String(),
+		"hint", hint)
+	return humanActionPause
+}
+
+// logRefusal records why a write failed, when the reason needs a person.
+func logRefusal(err error, log *slog.Logger) {
+	status, ok := statusFromError(err)
+	if !ok {
+		return
+	}
+	if hint, refused := refusalHint(status); refused {
+		log.Error("twitter: the API refused the write",
+			"status", status, "hint", hint)
+	}
 }

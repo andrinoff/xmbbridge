@@ -5,15 +5,15 @@ every new post to the others, so posting on any one platform makes it appear eve
 
 ```
                        ┌──────────────────────────────────────────────┐
-  X (polled)  ────────▶│                                              │
-  Mastodon (polled) ──▶│  engine: recognise → dedupe → prepare media  │───▶ Mastodon
-  Bluesky (jetstream)─▶│          → fan out to every other platform   │───▶ Bluesky
+  X (polled)  ────────▶│                                              │───▶ Mastodon
+  Mastodon (polled) ──▶│  engine: recognise → dedupe → prepare media   │───▶ Bluesky
+  Bluesky (jetstream)─▶│          → fan out to every other platform    │───▶ X (OAuth 1.0a)
                        └──────────────────────────────────────────────┘
 ```
 
-X is **inbound only**. The bridge reads X and copies posts to Mastodon and Bluesky, but
-never writes to X, because the X API's write access requires a paid tier and its video
-endpoints do not expose a downloadable file. Everything else is two-way.
+X is read-only unless you give it the full OAuth 1.0a user-context credential set. With
+the bearer token alone the bridge reads X and copies posts to Mastodon and Bluesky; with
+the OAuth 1.0a keys configured, X also becomes a destination.
 
 ## What it does
 
@@ -63,30 +63,67 @@ Bluesky's listener is a live tail and has nothing to replay).
 ## Credentials
 
 ### Mastodon
-1. Create an application on your instance (Preferences → Development → New application)
-   with the `read:statuses` and `write:statuses` scopes.
+1. Create an application on your instance (Preferences → Development → New application).
+   Grant the `read:statuses`, `write:statuses`, and `write:media` scopes. `write:media` is
+   required for image and video uploads.
 2. Use the generated **access token** as `mastodon.access_token`.
 
+Without the web UI, the same token can be obtained from the API. You will be shown a URL
+to approve in a browser, then paste the resulting code back:
+
+```bash
+INSTANCE=https://mastodon.social
+curl -s -X POST "$INSTANCE/api/v1/apps" \
+  --data-urlencode "client_name=xmbbridge" \
+  --data-urlencode "redirect_uris=urn:ietf:wg:oauth:2.0:oob" \
+  --data-urlencode "scopes=read:statuses write:statuses write:media"
+# prints client_id and client_secret; put them in the URL below and approve it
+echo "$INSTANCE/oauth/authorize?client_id=CLIENT_ID&scope=read:statuses+write:statuses+write:media&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code"
+# after approving, exchange the code for a token
+curl -s -X POST "$INSTANCE/oauth/token" \
+  --data-urlencode "client_id=CLIENT_ID" \
+  --data-urlencode "client_secret=CLIENT_SECRET" \
+  --data-urlencode "grant_type=authorization_code" \
+  --data-urlencode "code=THE_CODE" \
+  --data-urlencode "redirect_uri=urn:ietf:wg:oauth:2.0:oob"
+```
+
 ### Bluesky
-1. Settings → App Passwords → Add App Password.
-2. Use the generated password as `bluesky.app_password`. It is not your account password,
-   and it can be revoked at any time. No app registration or OAuth flow is needed.
+1. Go to <https://bsky.app/settings/app-passwords> → **Add App Password**, name it
+   `xmbbridge`, and copy the generated password.
+2. Use your handle as `bluesky.handle` and the generated password as
+   `bluesky.app_password`. It is not your account password, and it can be revoked at any
+   time. No app registration or OAuth flow is needed.
 
 ### X
-Reading is enough, so app-only bearer auth works:
+Reading works with an app-only bearer token; **posting and media uploads require the full
+OAuth 1.0a user-context set**, because the write endpoints reject app-only auth.
 
-1. Create an app in the X developer portal.
-2. Copy the **bearer token** (app-only) into `twitter.bearer_token`.
-3. Find your numeric user ID and set `twitter.user_id`.
+1. Sign up at <https://developer.x.com>, create a Project and an App. Set the App's user
+   authentication settings to **Read and write** before generating tokens.
+2. From **Keys and tokens**, copy:
+   - the **Bearer Token** (only needed if you want read-only X, or as a fallback)
+   - the **API Key** and **API Key Secret** → `consumer_key`, `consumer_secret`
+   - the **Access Token** and **Access Token Secret** → `access_token`,
+     `access_token_secret`
+3. Look up your numeric user ID and set `twitter.user_id`:
 
-OAuth 1.0a user-context credentials (`consumer_key`, `consumer_secret`, `access_token`,
-`access_token_secret`) are also supported and are used instead of the bearer token when
-all four are present.
+```bash
+curl -s "https://api.twitter.com/2/users/by/username/YOURHANDLE" \
+  -H "Authorization: Bearer $XMBBRIDGE_TWITTER_BEARER_TOKEN"
+# => {"data":{"id":"1234567890","name":"...","username":"YOURHANDLE"}}
+```
 
-Reading your own timeline is subject to X's access tier. The Free tier is heavily rate
-limited (of the order of a couple of dozen read requests per 15 minutes), so the bridge
-parks itself until the window resets rather than hammering the endpoint. Expect X posts to
-appear a little later than the others on a low tier.
+Gotcha: an access token inherits the app's permission level **at the moment it is
+generated**. If the app was created as read-only, change it to Read and write and
+regenerate the Access Token and Secret, or every write returns 403.
+
+Both reading and posting consume your X API credits, and a poll that finds nothing still
+costs a request. If you pay per request, raise `twitter_poll_interval` (for example to
+`30m`) to stretch the budget; X posts will simply arrive later than the others. When
+credits run out the listener logs `API credits are exhausted; pausing the listener` and
+rests for an hour at a time until you top up — the Mastodon and Bluesky halves carry on
+regardless.
 
 ## Running it
 
@@ -101,14 +138,42 @@ docker compose logs -f
 
 State lives on the `bridge-data` volume; the config is mounted read-only.
 
-### systemd
+### Ubuntu server, one command
+
+Copy the repository to the server and run the installer as root. It installs ffmpeg,
+builds the binary, creates the service user, installs the unit, and starts the service:
 
 ```bash
-sudo useradd --system --home /var/lib/xmbbridge xmbbridge
-sudo install -d -o xmbbridge -g xmbbridge /var/lib/xmbbridge /etc/xmbbridge
-sudo install -m 600 -o xmbbridge config.yaml /etc/xmbbridge/config.yaml
-sudo install -m 600 -o xmbbridge /dev/null /etc/xmbbridge/xmbbridge.env   # secrets go here
+# from your workstation
+tar --exclude ./data --exclude ./bridge --exclude ./config.yaml -czf xmbbridge.tgz .
+scp xmbbridge.tgz you@server:~/ && scp config.yaml you@server:~/xmbbridge/
+
+# on the server
+mkdir -p ~/xmbbridge && tar xzf ~/xmbbridge.tgz -C ~/xmbbridge && cd ~/xmbbridge
+sudo ./deploy/install-ubuntu.sh config.yaml
+sudo systemctl restart xmbbridge          # after filling in /etc/xmbbridge/xmbbridge.env
+journalctl -u xmbbridge -f
+```
+
+The script is safe to re-run: it keeps an existing config, env file, and database. It also
+prints a credential-check command that runs `-check` as the service user.
+
+### systemd, step by step
+
+If you would rather do it by hand:
+
+```bash
+sudo apt install -y ffmpeg
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/bridge ./cmd/bridge
+
+sudo useradd --system --home-dir /var/lib/xmbbridge --create-home --shell /usr/sbin/nologin xmbbridge
+sudo install -d -o xmbbridge -g xmbbridge /var/lib/xmbbridge
+sudo install -d /etc/xmbbridge
+sudo install -m 600 -o xmbbridge -g xmbbridge config.yaml /etc/xmbbridge/config.yaml
+sudo install -m 600 -o xmbbridge -g xmbbridge /dev/null /etc/xmbbridge/xmbbridge.env
+
 sudo cp deploy/xmbbridge.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable --now xmbbridge
 ```
 
@@ -158,7 +223,11 @@ account with video disabled can be configured without touching code.
   cannot be made to fit is dropped with a warning and the text still goes out.
 - **X video becomes its poster frame.** The v2 API exposes no downloadable video file for
   tweets, only a preview image, so X videos are copied as still images. Animated GIFs do
-  have a real MP4 URL and are transcoded normally.
+  have a real MP4 URL and are transcoded normally. Video **into** X uses the chunked
+  upload endpoint with a 140 second cap and alt text is attached where available.
+- **Truncation to 280 characters** on X is rune-based and conservative: X counts URLs as
+  23 characters regardless of length, so a post that barely fits elsewhere may be cut
+  slightly shorter than X itself would require.
 - **Bluesky is live-only.** The Jetstream listener has no historical replay, so `backfill`
   does not apply to it.
 - **Replies are opt-in** per platform via `include_replies`.
@@ -195,6 +264,8 @@ make fmt
 ```
 
 The test suite covers the properties that matter for correctness: a bridged post is never
-re-bridged (the loop guard), identical content is deduped once, routing excludes X and the
-origin, replies thread onto bridged parents, failed bridges stay retryable, images are
-compressed to fit a byte budget, and video transcoding produces a real MP4.
+re-bridged (the loop guard), identical content is deduped once, routing excludes the origin
+and any platform without write credentials, replies thread onto bridged parents, failed
+bridges stay retryable, images are compressed to fit a byte budget, video transcoding
+produces a real MP4, and the X posting path (simple and chunked uploads, processing waits,
+reply threading, credit exhaustion) is exercised against a fake of both X endpoints.

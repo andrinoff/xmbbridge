@@ -52,23 +52,29 @@ platforms:
     video: true
 
   twitter:
-    enabled: false               # read-only: X posts are copied elsewhere, never the reverse
+    enabled: false               # needs Read+Write app permissions to post
     user_id: "0000000000000000000"  # or XMBBRIDGE_TWITTER_USER_ID
-    # Use either an app-only bearer token...
-    bearer_token: ""             # or XMBBRIDGE_TWITTER_BEARER_TOKEN
-    # ...or OAuth 1.0a user-context credentials:
+    # Reading works with an app-only bearer token, but posting and media
+    # uploads need the full OAuth 1.0a user-context set below. Configure all
+    # four and X becomes a bridge target; leave them out and X stays read-only.
+    bearer_token: ""             # or XMBBRIDGE_TWITTER_BEARER_TOKEN (read-only fallback)
     consumer_key: ""             # XMBBRIDGE_TWITTER_CONSUMER_KEY
     consumer_secret: ""          # XMBBRIDGE_TWITTER_CONSUMER_SECRET
     access_token: ""             # XMBBRIDGE_TWITTER_ACCESS_TOKEN
     access_token_secret: ""      # XMBBRIDGE_TWITTER_ACCESS_TOKEN_SECRET
     include_replies: false
+    max_image_bytes: 5242880     # X caps still images at 5MB
+    max_video_bytes: 536870912   # chunked uploads allow 512MB
+    max_video_duration: 140s     # X caps video at 140 seconds
+    video: true
 
 # Optional: override which platforms mirror which. The default is: every post
-# fans out to every enabled writable platform except its origin. X is never a
-# target because the bridge does not write to X.
+# fans out to every enabled writable platform except its origin. X is writable
+# only when its full OAuth 1.0a credential set is configured.
 # routes:
 #   twitter:
 #     - mastodon
 #     - bluesky
 #   mastodon:
 #     - bluesky
+#     - twitter

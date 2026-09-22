@@ -118,7 +118,9 @@ type BlueskyConfig struct {
 	PlatformLimits `yaml:",inline"`
 }
 
-// TwitterConfig configures the read-only X adapter.
+// TwitterConfig configures the X adapter. Reading works with either an
+// app-only bearer token or OAuth 1.0a credentials; posting requires the full
+// OAuth 1.0a set because the write endpoints only accept user context.
 type TwitterConfig struct {
 	Enabled           bool   `yaml:"enabled"`
 	UserID            string `yaml:"user_id"`
@@ -128,6 +130,7 @@ type TwitterConfig struct {
 	AccessToken       string `yaml:"access_token"`
 	AccessTokenSecret string `yaml:"access_token_secret"`
 	IncludeReplies    bool   `yaml:"include_replies"`
+	PlatformLimits    `yaml:",inline"`
 }
 
 // UsesOAuth1 reports whether X credentials are configured for OAuth 1.0a
@@ -202,6 +205,10 @@ func (c *Config) applyDefaults() {
 	if c.Platforms.Bluesky.Jetstream == "" {
 		c.Platforms.Bluesky.Jetstream = "wss://jetstream1.us-east.bsky.network/subscribe"
 	}
+
+	// X accepts 5MB images and, through the chunked upload endpoint, video of
+	// up to 512MB and 140 seconds.
+	defaultLimit(&c.Platforms.Twitter.PlatformLimits, 5<<20, 512<<20, 4096, 140*time.Second, true)
 }
 
 func defaultLimit(l *PlatformLimits, imageBytes, videoBytes, imageDim int, videoDuration time.Duration, video bool) {
@@ -270,8 +277,9 @@ func (c *Config) EnabledPlatforms() []model.Platform {
 	return out
 }
 
-// WritablePlatforms returns the enabled platforms the bridge can post to.
-// X is always read-only and is therefore excluded.
+// WritablePlatforms returns the enabled platforms the bridge can post to. X
+// only appears when its OAuth 1.0a user-context credentials are configured,
+// because the write endpoints do not accept app-only bearer auth.
 func (c *Config) WritablePlatforms() []model.Platform {
 	var out []model.Platform
 	if c.Platforms.Mastodon.Enabled {
@@ -280,19 +288,22 @@ func (c *Config) WritablePlatforms() []model.Platform {
 	if c.Platforms.Bluesky.Enabled {
 		out = append(out, model.PlatformBluesky)
 	}
+	if c.Platforms.Twitter.Enabled && c.Platforms.Twitter.UsesOAuth1() {
+		out = append(out, model.PlatformTwitter)
+	}
 	return out
 }
 
 // TargetsFor returns the platforms a post originating on origin should be
 // mirrored to. It honours an explicit routes override, then falls back to
-// every writable platform except the origin itself. Twitter is never a target.
+// every writable platform except the origin itself.
 func (c *Config) TargetsFor(origin model.Platform) []model.Platform {
 	writable := c.WritablePlatforms()
 	if explicit, ok := c.Routes[string(origin)]; ok {
 		var out []model.Platform
 		for _, name := range explicit {
 			p := model.Platform(name)
-			if !p.Valid() || p == origin || !isWritable(p) {
+			if !p.Valid() || p == origin {
 				continue
 			}
 			if !contains(writable, p) {
@@ -310,8 +321,6 @@ func (c *Config) TargetsFor(origin model.Platform) []model.Platform {
 	}
 	return out
 }
-
-func isWritable(p model.Platform) bool { return p != model.PlatformTwitter }
 
 func contains(list []model.Platform, p model.Platform) bool {
 	for _, item := range list {

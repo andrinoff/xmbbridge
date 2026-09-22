@@ -112,16 +112,18 @@ func TestEngineBridgesToEveryConfiguredTarget(t *testing.T) {
 	}
 }
 
-func TestEngineNeverTargetsTwitter(t *testing.T) {
+func TestEngineRoutingSkipsReadOnlyTwitter(t *testing.T) {
 	cfg := testConfig()
 	mastodon := &fakeTarget{name: model.PlatformMastodon, limits: defaultLimits()}
 	bluesky := &fakeTarget{name: model.PlatformBluesky, limits: defaultLimits()}
 	engine, _ := newTestEngine(t, cfg, mastodon, bluesky)
 
+	// testConfig uses a bearer token, which cannot write, so X is a source
+	// only.
 	routes := engine.Routes()
 	for _, target := range routes[model.PlatformTwitter] {
 		if target == model.PlatformTwitter {
-			t.Fatal("X must never be a bridge target")
+			t.Fatal("X must never be a target of itself")
 		}
 	}
 	if len(routes[model.PlatformTwitter]) != 2 {
@@ -132,6 +134,107 @@ func TestEngineNeverTargetsTwitter(t *testing.T) {
 	}
 	if len(routes[model.PlatformBluesky]) != 1 || routes[model.PlatformBluesky][0] != model.PlatformMastodon {
 		t.Fatalf("bluesky should only fan out to mastodon, got %v", routes[model.PlatformBluesky])
+	}
+}
+
+// With OAuth 1.0a credentials X becomes a writable target, so both other
+// platforms mirror onto it while X itself stays read-only.
+func TestEngineRoutesToTwitterWhenItCanPost(t *testing.T) {
+	cfg := testConfig()
+	cfg.Platforms.Twitter = config.TwitterConfig{
+		Enabled:           true,
+		UserID:            "1",
+		ConsumerKey:       "ck",
+		ConsumerSecret:    "cs",
+		AccessToken:       "at",
+		AccessTokenSecret: "ats",
+	}
+	mastodon := &fakeTarget{name: model.PlatformMastodon, limits: defaultLimits()}
+	bluesky := &fakeTarget{name: model.PlatformBluesky, limits: defaultLimits()}
+	twitter := &fakeTarget{name: model.PlatformTwitter, limits: defaultLimits()}
+	engine, _ := newTestEngine(t, cfg, mastodon, bluesky, twitter)
+
+	for _, origin := range []model.Platform{model.PlatformMastodon, model.PlatformBluesky} {
+		found := false
+		for _, target := range engine.Routes()[origin] {
+			if target == model.PlatformTwitter {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s should mirror to X, got %v", origin, engine.Routes()[origin])
+		}
+	}
+	for _, target := range engine.Routes()[model.PlatformTwitter] {
+		if target == model.PlatformTwitter {
+			t.Fatal("X must not mirror to itself")
+		}
+	}
+
+	// A post from Bluesky reaches X, and the identifier X returns is recorded
+	// so the X listener will recognise it as the bridge's own work.
+	engine.handle(context.Background(), model.Post{
+		Origin:   model.PlatformBluesky,
+		OriginID: "at://did/post/1",
+		Text:     "hello everywhere",
+	})
+	if got := len(twitter.published()); got != 1 {
+		t.Fatalf("X received %d posts, want 1", got)
+	}
+}
+
+// Making X writable introduces a new chance to loop: the bridge's own tweet
+// comes back through the X timeline. The identifier recorded at post time must
+// let the X listener recognise it.
+func TestEngineDoesNotLoopWhenXIsATarget(t *testing.T) {
+	cfg := testConfig()
+	cfg.Platforms.Twitter = config.TwitterConfig{
+		Enabled:           true,
+		UserID:            "1",
+		ConsumerKey:       "ck",
+		ConsumerSecret:    "cs",
+		AccessToken:       "at",
+		AccessTokenSecret: "ats",
+	}
+	mastodon := &fakeTarget{name: model.PlatformMastodon, limits: defaultLimits()}
+	bluesky := &fakeTarget{name: model.PlatformBluesky, limits: defaultLimits()}
+	twitter := &fakeTarget{name: model.PlatformTwitter, limits: defaultLimits()}
+	engine, st := newTestEngine(t, cfg, mastodon, bluesky, twitter)
+	ctx := context.Background()
+
+	// A Mastodon post is mirrored onto X and Bluesky.
+	engine.handle(ctx, model.Post{
+		Origin:   model.PlatformMastodon,
+		OriginID: "m-1",
+		Text:     "hello from mastodon",
+	})
+	if got := len(twitter.published()); got != 1 {
+		t.Fatalf("X received %d posts, want 1", got)
+	}
+
+	// The tweet the bridge created, as the X listener would see it.
+	tweetID, ok, err := st.TargetID(ctx, model.PlatformMastodon, "m-1", model.PlatformTwitter)
+	if err != nil || !ok {
+		t.Fatalf("the bridge should have recorded the tweet id (ok=%v err=%v)", ok, err)
+	}
+
+	// The X listener now reports that tweet as a new post.
+	engine.handle(ctx, model.Post{
+		Origin:   model.PlatformTwitter,
+		OriginID: tweetID,
+		Text:     "hello from mastodon",
+	})
+
+	// Nothing more may be published: without the guard the bridge's own tweet
+	// would be copied back to Mastodon and Bluesky forever.
+	if got := len(twitter.published()); got != 1 {
+		t.Fatalf("X received %d posts, want 1 (the bridge's tweet looped)", got)
+	}
+	if got := len(mastodon.published()); got != 0 {
+		t.Fatalf("the bridged tweet was copied back to mastodon (%d posts)", got)
+	}
+	if got := len(bluesky.published()); got != 1 {
+		t.Fatalf("bluesky received %d posts, want the original 1", got)
 	}
 }
 

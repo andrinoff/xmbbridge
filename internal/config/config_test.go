@@ -353,7 +353,7 @@ routes:
 	}
 }
 
-func TestWritablePlatformsExcludesTwitter(t *testing.T) {
+func TestWritablePlatformsIsReadOnlyForBearerOnlyX(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `
 platforms:
   mastodon:
@@ -373,11 +373,149 @@ platforms:
 		t.Fatalf("Load: %v", err)
 	}
 	for _, platform := range cfg.WritablePlatforms() {
-		if string(platform) == "twitter" {
-			t.Fatal("X is read-only and must not be writable")
+		if platform == model.PlatformTwitter {
+			t.Fatal("bearer auth cannot write, so X must not be a target")
 		}
 	}
 	if len(cfg.WritablePlatforms()) != 2 {
 		t.Fatalf("writable platforms = %v", cfg.WritablePlatforms())
+	}
+	// Reading X still fans out to the two writable platforms.
+	if got := cfg.TargetsFor(model.PlatformTwitter); len(got) != 2 {
+		t.Fatalf("twitter targets = %v", got)
+	}
+}
+
+func TestWritablePlatformsIncludesXWithOAuth1(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+platforms:
+  mastodon:
+    enabled: true
+    server: https://m
+    access_token: t
+  bluesky:
+    enabled: true
+    handle: h
+    app_password: p
+  twitter:
+    enabled: true
+    user_id: "1"
+    consumer_key: ck
+    consumer_secret: cs
+    access_token: at
+    access_token_secret: ats
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	found := false
+	for _, platform := range cfg.WritablePlatforms() {
+		if platform == model.PlatformTwitter {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("OAuth 1.0a credentials should make X writable, got %v", cfg.WritablePlatforms())
+	}
+
+	// Both other platforms now mirror onto X.
+	for _, origin := range []model.Platform{model.PlatformMastodon, model.PlatformBluesky} {
+		targets := cfg.TargetsFor(origin)
+		hasX := false
+		for _, target := range targets {
+			if target == model.PlatformTwitter {
+				hasX = true
+			}
+			if target == origin {
+				t.Fatalf("%s should not target itself", origin)
+			}
+		}
+		if !hasX {
+			t.Fatalf("%s should mirror to X, got %v", origin, targets)
+		}
+	}
+
+	// X does not mirror to itself.
+	for _, target := range cfg.TargetsFor(model.PlatformTwitter) {
+		if target == model.PlatformTwitter {
+			t.Fatal("X must not target itself")
+		}
+	}
+}
+
+func TestPartialOAuth1CredentialsAreAnError(t *testing.T) {
+	// Three of the four OAuth 1.0a keys is a common mistake. With no bearer
+	// token to fall back on, that is a validation error rather than a silently
+	// read-only adapter.
+	_, err := Load(writeConfig(t, `
+platforms:
+  mastodon:
+    enabled: true
+    server: https://m
+    access_token: t
+  twitter:
+    enabled: true
+    user_id: "1"
+    consumer_key: ck
+    consumer_secret: cs
+    access_token: at
+`))
+	if err == nil {
+		t.Fatal("a partial credential set should fail validation")
+	}
+	if !strings.Contains(err.Error(), "oauth1") {
+		t.Fatalf("error %q should name the incomplete credentials", err.Error())
+	}
+}
+
+func TestPartialOAuth1WithBearerFallsBackToReadOnly(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+platforms:
+  mastodon:
+    enabled: true
+    server: https://m
+    access_token: t
+  twitter:
+    enabled: true
+    user_id: "1"
+    bearer_token: b
+    consumer_key: ck
+    consumer_secret: cs
+    access_token: at
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Platforms.Twitter.UsesOAuth1() {
+		t.Fatal("an incomplete credential set is not usable")
+	}
+	for _, platform := range cfg.WritablePlatforms() {
+		if platform == model.PlatformTwitter {
+			t.Fatal("X must stay read-only without a full credential set")
+		}
+	}
+}
+
+func TestTwitterDefaultsMatchTheAPILimits(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+platforms:
+  twitter:
+    enabled: true
+    user_id: "1"
+    bearer_token: b
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	limits := cfg.Platforms.Twitter.PlatformLimits
+	if limits.MaxImageBytes != 5<<20 {
+		t.Errorf("image budget = %d", limits.MaxImageBytes)
+	}
+	if limits.MaxVideoDuration.D() != 140*time.Second {
+		t.Errorf("video duration = %v", limits.MaxVideoDuration.D())
+	}
+	if !limits.Video {
+		t.Error("video should default to enabled for X")
 	}
 }

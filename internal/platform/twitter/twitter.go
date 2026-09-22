@@ -32,7 +32,16 @@ type Options struct {
 	// APIHost overrides the X API root, which tests use to point the client at
 	// a local server. Empty means the real API.
 	APIHost string
+
+	// UploadHost overrides the media upload root the same way.
+	UploadHost string
 }
+
+// apiHost and uploadHost are the production endpoints.
+const (
+	apiHostDefault    = "https://api.twitter.com"
+	uploadHostDefault = "https://upload.twitter.com"
+)
 
 // bearerAuthorizer signs requests as app-only.
 type bearerAuthorizer struct{ token string }
@@ -47,7 +56,8 @@ type oauth1Authorizer struct{}
 
 func (oauth1Authorizer) Add(*http.Request) {}
 
-// Adapter implements the bridge's source interface for X.
+// Adapter implements the bridge's source and, with OAuth 1.0a credentials,
+// target interfaces for X.
 type Adapter struct {
 	client       *tw.Client
 	cfg          config.TwitterConfig
@@ -56,6 +66,12 @@ type Adapter struct {
 	userID       string
 	pollInterval time.Duration
 	backfill     bool
+
+	// uploadClient issues the signed media upload calls; it is nil unless
+	// OAuth 1.0a credentials are configured, because the upload and write
+	// endpoints only accept user context.
+	uploadClient *http.Client
+	uploadHost   string
 }
 
 // New builds an X adapter. It does not perform any network calls; credentials
@@ -68,16 +84,25 @@ func New(opts Options) (*Adapter, error) {
 		opts.Logger = slog.Default()
 	}
 
+	// OAuth 1.0a is preferred whenever it is configured because it can do
+	// everything app-only bearer auth can, plus media uploads and posting. The
+	// bearer token is the read-only fallback.
 	var authorizer tw.Authorizer
 	var httpClient *http.Client
-	if opts.Config.BearerToken != "" {
-		authorizer = bearerAuthorizer{token: opts.Config.BearerToken}
-		httpClient = opts.HTTPClient
-	} else {
+	var uploadClient *http.Client
+	if opts.Config.UsesOAuth1() {
 		oauthConfig := oauth1.NewConfig(opts.Config.ConsumerKey, opts.Config.ConsumerSecret)
 		token := oauth1.NewToken(opts.Config.AccessToken, opts.Config.AccessTokenSecret)
 		httpClient = oauthConfig.Client(context.Background(), token)
+		// The same signed client performs media uploads, which live on a
+		// separate host from the timeline API.
+		uploadClient = oauthConfig.Client(context.Background(), token)
 		authorizer = oauth1Authorizer{}
+	} else if opts.Config.BearerToken != "" {
+		authorizer = bearerAuthorizer{token: opts.Config.BearerToken}
+		httpClient = opts.HTTPClient
+	} else {
+		return nil, fmt.Errorf("twitter: need either oauth1 credentials or a bearer token")
 	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -85,7 +110,11 @@ func New(opts Options) (*Adapter, error) {
 
 	host := opts.APIHost
 	if host == "" {
-		host = "https://api.twitter.com"
+		host = apiHostDefault
+	}
+	uploadHost := opts.UploadHost
+	if uploadHost == "" {
+		uploadHost = uploadHostDefault
 	}
 
 	return &Adapter{
@@ -98,6 +127,8 @@ func New(opts Options) (*Adapter, error) {
 		log:          opts.Logger,
 		state:        opts.State,
 		userID:       opts.Config.UserID,
+		uploadClient: uploadClient,
+		uploadHost:   uploadHost,
 		pollInterval: opts.PollInterval,
 		backfill:     opts.Backfill,
 	}, nil

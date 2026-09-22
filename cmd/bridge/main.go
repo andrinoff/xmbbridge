@@ -139,7 +139,13 @@ func buildPlatforms(ctx context.Context, cfg *config.Config, st *store.Store, lo
 			return nil, nil, fmt.Errorf("twitter: %w", err)
 		}
 		sources = append(sources, adapter)
-		// X is read-only: it is a source, never a target.
+		// With OAuth 1.0a user-context credentials X is a target as well; with
+		// only a bearer token it stays read-only.
+		if adapter.CanPost() {
+			targets = append(targets, adapter)
+		} else {
+			logger.Info("twitter: read-only, posting needs OAuth 1.0a credentials")
+		}
 	}
 
 	return sources, targets, nil

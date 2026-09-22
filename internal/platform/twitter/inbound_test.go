@@ -2,6 +2,8 @@ package twitter
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +18,8 @@ import (
 	"github.com/andrinoff/xmbbridge/internal/config"
 	"github.com/andrinoff/xmbbridge/internal/model"
 	"github.com/andrinoff/xmbbridge/internal/store"
+
+	tw "github.com/g8rswimmer/go-twitter/v2"
 )
 
 func discardLogger() *slog.Logger {
@@ -297,8 +301,97 @@ func TestPollSurfacesAPIErrors(t *testing.T) {
 	adapter := newTestAdapter(t, server, st, bearerTestConfig())
 	sink := make(chan model.Post, 4)
 
-	if _, err := adapter.poll(context.Background(), sink); err == nil {
+	wait, err := adapter.poll(context.Background(), sink)
+	if err == nil {
 		t.Fatal("expected an error for a rejected credential")
+	}
+	// A rejected token needs a human, so the listener rests instead of
+	// retrying every few minutes.
+	if wait != humanActionPause {
+		t.Fatalf("wait = %v, want the human-action pause", wait)
+	}
+}
+
+// Reproduces the real response X returns when a paid plan's credits run out.
+func TestPollPausesWhenCreditsAreDepleted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPaymentRequired)
+		io.WriteString(w, `{"detail":"credits depleted","status":402,`+
+			`"title":"Payment Required","type":"https://api.x.com/2/problems/credits-depleted"}`)
+	}))
+	defer server.Close()
+
+	st := testStore(t)
+	adapter := newTestAdapter(t, server, st, bearerTestConfig())
+	sink := make(chan model.Post, 4)
+
+	wait, err := adapter.poll(context.Background(), sink)
+	if err == nil {
+		t.Fatal("expected an error when credits are depleted")
+	}
+	if wait != humanActionPause {
+		t.Fatalf("wait = %v, want the human-action pause", wait)
+	}
+	if !strings.Contains(err.Error(), "fetch timeline") {
+		t.Fatalf("error should be wrapped with context: %v", err)
+	}
+}
+
+func TestPollPausesWhenTheTierExcludesTheEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"title":"Forbidden","detail":"client-not-enrolled"}`, http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	st := testStore(t)
+	adapter := newTestAdapter(t, server, st, bearerTestConfig())
+
+	wait, err := adapter.poll(context.Background(), make(chan model.Post, 4))
+	if err == nil {
+		t.Fatal("expected an error for a forbidden request")
+	}
+	if wait != humanActionPause {
+		t.Fatalf("wait = %v, want the human-action pause", wait)
+	}
+}
+
+func TestPollDoesNotPauseOnTransientFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"title":"Service Unavailable"}`, http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	st := testStore(t)
+	adapter := newTestAdapter(t, server, st, bearerTestConfig())
+
+	wait, err := adapter.poll(context.Background(), make(chan model.Post, 4))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	// A 503 is worth retrying soon, so no long pause is requested.
+	if wait != 0 {
+		t.Fatalf("wait = %v, want 0 for a transient failure", wait)
+	}
+}
+
+func TestStatusFromError(t *testing.T) {
+	if _, ok := statusFromError(errors.New("plain")); ok {
+		t.Fatal("a plain error carries no status")
+	}
+	if status, ok := statusFromError(&tw.ErrorResponse{StatusCode: 402}); !ok || status != 402 {
+		t.Fatalf("ErrorResponse status = %d, %v", status, ok)
+	}
+	if status, ok := statusFromError(&tw.HTTPError{StatusCode: 429}); !ok || status != 429 {
+		t.Fatalf("HTTPError status = %d, %v", status, ok)
+	}
+	// The wrapped form used throughout the adapter must still be unwrapped.
+	// The library hands back the concrete type behind the error interface, so
+	// the test does the same.
+	var apiErr error = &tw.ErrorResponse{StatusCode: 402}
+	wrapped := fmt.Errorf("twitter: fetch timeline: %w", apiErr)
+	if status, ok := statusFromError(wrapped); !ok || status != 402 {
+		t.Fatalf("wrapped status = %d, %v", status, ok)
 	}
 }
 
