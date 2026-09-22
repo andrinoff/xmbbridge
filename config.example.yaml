@@ -1,0 +1,74 @@
+# XMBridge configuration
+#
+# Copy this file to config.yaml, fill in your credentials, and run
+# `bridge -config config.yaml -check` to verify everything before going live.
+#
+# Every secret below can be supplied through the environment instead (which is
+# recommended so tokens never touch disk). Environment values win:
+#
+#   XMBBRIDGE_MASTODON_ACCESS_TOKEN
+#   XMBBRIDGE_BLUESKY_APP_PASSWORD
+#   XMBBRIDGE_TWITTER_BEARER_TOKEN
+#   XMBBRIDGE_TWITTER_CONSUMER_KEY / CONSUMER_SECRET / ACCESS_TOKEN / ACCESS_TOKEN_SECRET
+#   XMBBRIDGE_TWITTER_USER_ID
+#   XMBBRIDGE_STORAGE, XMBBRIDGE_LOG_LEVEL
+
+storage: data/bridge.db          # SQLite state: read cursors, bridged map, dedup
+log_level: info                  # debug | info | warn | error
+
+poll_interval: 30s               # how often Mastodon's account statuses are polled
+twitter_poll_interval: 90s       # how often X's timeline is polled (rate limits override this)
+dedup_window: 5m                 # identical text posted by hand on two platforms within this
+                                 # window is bridged only once
+backfill: false                  # set true to bridge posts that predate the first launch
+
+media:
+  directory: data/media
+  image_max_dimension: 2000      # long edge for re-encoded images
+  ffmpeg_path: ffmpeg            # used to transcode video (optional; video is skipped without it)
+
+platforms:
+  mastodon:
+    enabled: false               # flip to true and add a token
+    server: https://mastodon.social
+    access_token: ""             # or XMBBRIDGE_MASTODON_ACCESS_TOKEN
+    visibility: public           # public | unlisted | private
+    include_replies: false       # true to also bridge replies
+    max_image_bytes: 16777216    # instance limit; 16MB is typical
+    max_video_bytes: 41943040    # instance limit; 40MB is typical
+    max_video_duration: 0s       # 0 = no duration cap
+    video: true
+
+  bluesky:
+    enabled: false               # flip to true and add an app password
+    handle: you.bsky.social
+    app_password: ""             # or XMBBRIDGE_BLUESKY_APP_PASSWORD; create one in Settings > App Passwords
+    pds: https://bsky.social
+    jetstream: wss://jetstream1.us-east.bsky.network/subscribe   # public relay, no credentials
+    include_replies: false
+    max_image_bytes: 2097152     # Bluesky caps image blobs at 2MB
+    max_video_bytes: 100000000   # Bluesky caps video blobs at 100MB
+    max_video_duration: 60s      # Bluesky caps clips at 60 seconds
+    video: true
+
+  twitter:
+    enabled: false               # read-only: X posts are copied elsewhere, never the reverse
+    user_id: "0000000000000000000"  # or XMBBRIDGE_TWITTER_USER_ID
+    # Use either an app-only bearer token...
+    bearer_token: ""             # or XMBBRIDGE_TWITTER_BEARER_TOKEN
+    # ...or OAuth 1.0a user-context credentials:
+    consumer_key: ""             # XMBBRIDGE_TWITTER_CONSUMER_KEY
+    consumer_secret: ""          # XMBBRIDGE_TWITTER_CONSUMER_SECRET
+    access_token: ""             # XMBBRIDGE_TWITTER_ACCESS_TOKEN
+    access_token_secret: ""      # XMBBRIDGE_TWITTER_ACCESS_TOKEN_SECRET
+    include_replies: false
+
+# Optional: override which platforms mirror which. The default is: every post
+# fans out to every enabled writable platform except its origin. X is never a
+# target because the bridge does not write to X.
+# routes:
+#   twitter:
+#     - mastodon
+#     - bluesky
+#   mastodon:
+#     - bluesky

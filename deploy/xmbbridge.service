@@ -1,0 +1,31 @@
+[Unit]
+Description=XMBridge - mirror posts between Mastodon, Bluesky, and X
+Documentation=https://github.com/andrinoff/xmbbridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xmbbridge
+Group=xmbbridge
+
+# Secrets belong in this file, not in the world-readable config:
+#   XMBBRIDGE_MASTODON_ACCESS_TOKEN=...
+#   XMBBRIDGE_BLUESKY_APP_PASSWORD=...
+EnvironmentFile=-/etc/xmbbridge/xmbbridge.env
+
+WorkingDirectory=/var/lib/xmbbridge
+ExecStart=/usr/local/bin/bridge -config /etc/xmbbridge/config.yaml
+
+Restart=always
+RestartSec=10s
+
+# The bridge only needs to make outbound connections and write its own state.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xmbbridge
+
+[Install]
+WantedBy=multi-user.target

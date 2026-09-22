@@ -1,0 +1,14 @@
+# Binaries
+/bridge
+/dist/
+
+# Runtime state
+/data/
+
+# Secrets
+config.yaml
+.env
+
+# Editor noise
+.DS_Store
+*.swp

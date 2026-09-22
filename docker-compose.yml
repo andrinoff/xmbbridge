@@ -1,0 +1,23 @@
+services:
+  bridge:
+    build: .
+    image: xmbbridge:latest
+    container_name: xmbbridge
+    restart: unless-stopped
+    volumes:
+      # Mount your config read-only and keep runtime state on a named volume.
+      - ./config.yaml:/var/lib/xmbbridge/config.yaml:ro
+      - bridge-data:/var/lib/xmbbridge/data
+    environment:
+      # Secrets live here rather than in the config file.
+      XMBBRIDGE_MASTODON_ACCESS_TOKEN: "${XMBBRIDGE_MASTODON_ACCESS_TOKEN:-}"
+      XMBBRIDGE_BLUESKY_APP_PASSWORD: "${XMBBRIDGE_BLUESKY_APP_PASSWORD:-}"
+      XMBBRIDGE_TWITTER_BEARER_TOKEN: "${XMBBRIDGE_TWITTER_BEARER_TOKEN:-}"
+      XMBBRIDGE_TWITTER_CONSUMER_KEY: "${XMBBRIDGE_TWITTER_CONSUMER_KEY:-}"
+      XMBBRIDGE_TWITTER_CONSUMER_SECRET: "${XMBBRIDGE_TWITTER_CONSUMER_SECRET:-}"
+      XMBBRIDGE_TWITTER_ACCESS_TOKEN: "${XMBBRIDGE_TWITTER_ACCESS_TOKEN:-}"
+      XMBBRIDGE_TWITTER_ACCESS_TOKEN_SECRET: "${XMBBRIDGE_TWITTER_ACCESS_TOKEN_SECRET:-}"
+      XMBBRIDGE_TWITTER_USER_ID: "${XMBBRIDGE_TWITTER_USER_ID:-}"
+
+volumes:
+  bridge-data:
