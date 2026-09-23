@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/andrinoff/xmbbridge/internal/config"
@@ -158,7 +160,7 @@ func (a *Adapter) toPost(tweet *tw.TweetObj, mediaByKey map[string]*tw.MediaObj)
 		Origin:    model.PlatformTwitter,
 		OriginID:  tweet.ID,
 		OriginURL: fmt.Sprintf("https://x.com/i/web/status/%s", tweet.ID),
-		Text:      tweet.Text,
+		Text:      expandTweetURLs(tweet),
 		CreatedAt: parseTime(tweet.CreatedAt),
 		Lang:      tweet.Language,
 	}
@@ -180,6 +182,62 @@ func (a *Adapter) toPost(tweet *tw.TweetObj, mediaByKey map[string]*tw.MediaObj)
 		}
 	}
 	return post
+}
+
+// expandTweetURLs restores the links X wraps in t.co redirects back to the
+// addresses they point at, so bridged posts carry the original URLs instead
+// of X's short links. Links to the tweet's own media are removed: the bridge
+// re-attaches the media itself, and a link back to X's copy of the picture
+// would only clutter the bridged post.
+func expandTweetURLs(tweet *tw.TweetObj) string {
+	body := tweet.Text
+	if tweet.Entities == nil || len(tweet.Entities.URLs) == 0 || body == "" {
+		return body
+	}
+
+	// Entity offsets count Unicode code points, so the text is edited as
+	// runes. Edits run from the end of the text backwards so offsets of the
+	// earlier entities stay valid.
+	runes := []rune(body)
+	urls := slices.Clone(tweet.Entities.URLs)
+	slices.SortFunc(urls, func(a, b tw.EntityURLObj) int { return b.Start - a.Start })
+
+	removedMediaLink := false
+	for _, entity := range urls {
+		if entity.URL == "" || entity.Start < 0 || entity.Start >= entity.End || entity.End > len(runes) {
+			continue
+		}
+		if string(runes[entity.Start:entity.End]) != entity.URL {
+			continue
+		}
+
+		if entity.MediaKey != "" {
+			// Swallow one separating space so removing a mid-text link does
+			// not leave a doubled gap.
+			end := entity.End
+			if end < len(runes) && isSeparator(runes[end]) &&
+				(entity.Start == 0 || isSeparator(runes[entity.Start-1])) {
+				end++
+			}
+			runes = slices.Concat(runes[:entity.Start], runes[end:])
+			removedMediaLink = true
+			continue
+		}
+
+		if entity.ExpandedURL == "" {
+			continue
+		}
+		runes = slices.Concat(runes[:entity.Start], []rune(entity.ExpandedURL), runes[entity.End:])
+	}
+
+	if !removedMediaLink {
+		return string(runes)
+	}
+	return strings.TrimSpace(string(runes))
+}
+
+func isSeparator(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
 }
 
 func mediaFromTweet(item *tw.MediaObj) model.Media {

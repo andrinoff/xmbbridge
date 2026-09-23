@@ -143,6 +143,10 @@ func TestPollEmitsNewTweetsOldestFirst(t *testing.T) {
 	if q := fake.lastQuery(); !contains(q, "attachments.media_keys") {
 		t.Fatalf("query = %q, want media expansions", q)
 	}
+	// Entities carry the original URL behind each t.co link.
+	if q := fake.lastQuery(); !contains(q, "entities") {
+		t.Fatalf("query = %q, want the entities field", q)
+	}
 
 	cursor, err := st.Cursor(context.Background(), model.PlatformTwitter)
 	if err != nil {
@@ -191,6 +195,38 @@ func TestPollResolvesMedia(t *testing.T) {
 	}
 	if post.Media[0].AltText != "a cat" {
 		t.Fatalf("alt = %q", post.Media[0].AltText)
+	}
+}
+
+func TestPollExpandsShortLinksFromEntities(t *testing.T) {
+	fake := &fakeX{body: `{
+		"data":[{"id":"400","text":"read this https://t.co/AbCdEf123","created_at":"2024-05-01T10:00:00.000Z",
+		         "entities":{"urls":[{"start":10,"end":32,"url":"https://t.co/AbCdEf123",
+		                              "expanded_url":"https://example.com/original/article",
+		                              "display_url":"example.com/original/article"}]}}],
+		"meta":{"result_count":1,"newest_id":"400","oldest_id":"400"}
+	}`}
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+
+	st := testStore(t)
+	if err := st.SetCursor(context.Background(), model.PlatformTwitter, "399"); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+	adapter := newTestAdapter(t, server, st, bearerTestConfig())
+	sink := make(chan model.Post, 4)
+
+	if _, err := adapter.poll(context.Background(), sink); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	close(sink)
+
+	post, ok := <-sink
+	if !ok {
+		t.Fatal("no post emitted")
+	}
+	if post.Text != "read this https://example.com/original/article" {
+		t.Fatalf("text = %q, want the original link", post.Text)
 	}
 }
 

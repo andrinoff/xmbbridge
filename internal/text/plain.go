@@ -82,6 +82,73 @@ func avoidSplittingURL(s string, runes []rune, cut int) int {
 	return cut
 }
 
+// Link is a URL found in a post body, with byte offsets into the original
+// string. Platforms that need explicit annotations to make a URL clickable
+// (Bluesky) use the offsets to point at the exact range.
+type Link struct {
+	Start int
+	End   int
+	URL   string
+}
+
+// FindLinks locates every URL in s. Trailing sentence punctuation is kept out
+// of the link, and closing brackets are only part of the link when the URL
+// contains their matching opener, so "see (https://example.com)." links
+// cleanly without swallowing the sentence's punctuation.
+func FindLinks(s string) []Link {
+	var links []Link
+	for _, loc := range urlPattern.FindAllStringIndex(s, -1) {
+		start, rawEnd := loc[0], loc[1]
+		trimmed := trimLinkEnd(s[start:rawEnd])
+		if trimmed == "" {
+			continue
+		}
+		links = append(links, Link{
+			Start: start,
+			End:   start + len(trimmed),
+			URL:   trimmed,
+		})
+	}
+	return links
+}
+
+// trimLinkEnd removes trailing characters that belong to the sentence around
+// a URL rather than the URL itself. A closing bracket is only dropped while
+// the URL holds more closers than openers.
+func trimLinkEnd(raw string) string {
+	for len(raw) > 0 {
+		if trimmed, ok := strings.CutSuffix(raw, "…"); ok {
+			raw = trimmed
+			continue
+		}
+		last := raw[len(raw)-1]
+		switch last {
+		case '.', ',', ';', ':', '!', '?', '\'', '"', '*', '_', '~', '>':
+			raw = raw[:len(raw)-1]
+			continue
+		case ')', ']', '}':
+			open, closed := bracketPair(last)
+			if strings.Count(raw, open) < strings.Count(raw, closed) {
+				raw = raw[:len(raw)-1]
+				continue
+			}
+		}
+		return raw
+	}
+	return raw
+}
+
+func bracketPair(close byte) (open, closed string) {
+	switch close {
+	case ')':
+		return "(", ")"
+	case ']':
+		return "[", "]"
+	default:
+		return "{", "}"
+	}
+}
+
 // Normalize collapses the cosmetic differences that should not stop two posts
 // being recognised as the same content.
 func Normalize(s string) string {

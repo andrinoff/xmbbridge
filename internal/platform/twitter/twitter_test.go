@@ -2,6 +2,7 @@ package twitter
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,128 @@ func TestToPostDetectsRepliesAndParent(t *testing.T) {
 	}
 	if post.ReplyToID != "1" {
 		t.Fatalf("reply parent = %q, want 1", post.ReplyToID)
+	}
+}
+
+// urlEntity builds the entity record X reports for a link at the given text
+// position; offsets count code points, as the API returns them.
+func urlEntity(body, short, expanded, mediaKey string) tw.EntityURLObj {
+	start := len([]rune(strings.SplitN(body, short, 2)[0]))
+	return tw.EntityURLObj{
+		EntityObj:   tw.EntityObj{Start: start, End: start + len([]rune(short))},
+		URL:         short,
+		ExpandedURL: expanded,
+		MediaKey:    mediaKey,
+	}
+}
+
+func TestToPostExpandsShortLinks(t *testing.T) {
+	adapter := &Adapter{}
+	short := "https://t.co/AbCdEf123"
+	expanded := "https://example.com/original/article"
+	body := "read this " + short
+	tweet := &tw.TweetObj{
+		ID:       "5",
+		Text:     body,
+		Entities: &tw.EntitiesObj{URLs: []tw.EntityURLObj{urlEntity(body, short, expanded, "")}},
+	}
+
+	post := adapter.toPost(tweet, nil)
+
+	if post.Text != "read this "+expanded {
+		t.Fatalf("text = %q, want the t.co link replaced with the original URL", post.Text)
+	}
+}
+
+func TestToPostExpandsLinksAfterEmoji(t *testing.T) {
+	adapter := &Adapter{}
+	// An astral emoji is one code point but several bytes; an entity offset
+	// counted in code points must not be applied as a byte or UTF-16 index.
+	short := "https://t.co/XyZ"
+	expanded := "https://example.com/go"
+	body := "héllo 👾 " + short
+	tweet := &tw.TweetObj{
+		ID:       "6",
+		Text:     body,
+		Entities: &tw.EntitiesObj{URLs: []tw.EntityURLObj{urlEntity(body, short, expanded, "")}},
+	}
+
+	post := adapter.toPost(tweet, nil)
+
+	if post.Text != "héllo 👾 "+expanded {
+		t.Fatalf("text = %q", post.Text)
+	}
+}
+
+func TestToPostDropsLinkToItsOwnMedia(t *testing.T) {
+	adapter := &Adapter{}
+	short := "https://t.co/PicTuRe1"
+	body := "a picture " + short
+	tweet := &tw.TweetObj{
+		ID:   "7",
+		Text: body,
+		Entities: &tw.EntitiesObj{URLs: []tw.EntityURLObj{
+			urlEntity(body, short, "https://twitter.com/user/status/7/photo/1", "3_1234567890"),
+		}},
+	}
+
+	post := adapter.toPost(tweet, nil)
+
+	if post.Text != "a picture" {
+		t.Fatalf("text = %q, want the media link removed", post.Text)
+	}
+}
+
+func TestToPostDropsMediaLinkMidText(t *testing.T) {
+	adapter := &Adapter{}
+	short := "https://t.co/PicTuRe1"
+	body := "look at " + short + " and enjoy"
+	tweet := &tw.TweetObj{
+		ID:   "8",
+		Text: body,
+		Entities: &tw.EntitiesObj{URLs: []tw.EntityURLObj{
+			urlEntity(body, short, "https://twitter.com/user/status/8/photo/1", "3_1234567890"),
+		}},
+	}
+
+	post := adapter.toPost(tweet, nil)
+
+	if post.Text != "look at and enjoy" {
+		t.Fatalf("text = %q, want the media link removed without a doubled space", post.Text)
+	}
+}
+
+func TestToPostMixesMediaLinkAndRegularLink(t *testing.T) {
+	adapter := &Adapter{}
+	mediaShort := "https://t.co/PicTuRe1"
+	linkShort := "https://t.co/Link456"
+	expanded := "https://example.com/target"
+	body := "see " + mediaShort + " and " + linkShort
+	tweet := &tw.TweetObj{
+		ID:   "10",
+		Text: body,
+		// Declared out of order on purpose: edits must not disturb each other.
+		Entities: &tw.EntitiesObj{URLs: []tw.EntityURLObj{
+			urlEntity(body, linkShort, expanded, ""),
+			urlEntity(body, mediaShort, "https://twitter.com/user/status/10/photo/1", "3_1234567890"),
+		}},
+	}
+
+	post := adapter.toPost(tweet, nil)
+
+	if post.Text != "see and "+expanded {
+		t.Fatalf("text = %q, want %q", post.Text, "see and "+expanded)
+	}
+}
+
+func TestToPostKeepsTextWithoutEntities(t *testing.T) {
+	adapter := &Adapter{}
+	tweet := &tw.TweetObj{ID: "9", Text: "read this https://t.co/AbCdEf123"}
+
+	post := adapter.toPost(tweet, nil)
+
+	if post.Text != "read this https://t.co/AbCdEf123" {
+		t.Fatalf("text = %q, want the raw text when no entities were returned", post.Text)
 	}
 }
 

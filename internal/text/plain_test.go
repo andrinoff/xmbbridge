@@ -1,6 +1,9 @@
 package text
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestStripHTML(t *testing.T) {
 	tests := []struct {
@@ -76,6 +79,63 @@ func TestTruncateKeepsWholeURLWhenItFits(t *testing.T) {
 	// The URL must survive whole; only the words after it may be cut.
 	if got != "https://example.com/short and\u2026" {
 		t.Fatalf("expected the whole URL to survive, got %q", got)
+	}
+}
+
+func TestFindLinks(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"none", "no links in here", nil},
+		{"plain", "read https://example.com/a/b now", []string{"https://example.com/a/b"}},
+		{
+			"several",
+			"first https://example.com and second http://two.example.org/x",
+			[]string{"https://example.com", "http://two.example.org/x"},
+		},
+		{"sentence period", "see https://example.com/thing.", []string{"https://example.com/thing"}},
+		{"comma", "see https://example.com/thing, then read it", []string{"https://example.com/thing"}},
+		{"query string kept", "https://example.com/search?q=go&lang=en", []string{"https://example.com/search?q=go&lang=en"}},
+		{"balanced brackets kept", "see (https://en.wikipedia.org/wiki/Go_(game))", []string{"https://en.wikipedia.org/wiki/Go_(game)"}},
+		{"unbalanced bracket dropped", "see (https://example.com/thing)", []string{"https://example.com/thing"}},
+		{"ellipsis dropped", "from https://example.com/very/long\u2026", []string{"https://example.com/very/long"}},
+		{"without a scheme", "example.com/thing www.example.com", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FindLinks(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("FindLinks(%q) = %d links %v, want %v", tc.in, len(got), got, tc.want)
+			}
+			for i, want := range tc.want {
+				if got[i].URL != want {
+					t.Fatalf("link %d = %q, want %q", i, got[i].URL, want)
+				}
+				if tc.in[got[i].Start:got[i].End] != want {
+					t.Fatalf("offsets %d:%d select %q, want %q",
+						got[i].Start, got[i].End, tc.in[got[i].Start:got[i].End], want)
+				}
+			}
+		})
+	}
+}
+
+func TestFindLinksReportsByteOffsets(t *testing.T) {
+	// Multi-byte characters before the link make byte offsets differ from
+	// rune offsets; Bluesky facets count bytes.
+	in := "h\u00e9llo \U0001F47E see https://example.com"
+	links := FindLinks(in)
+	if len(links) != 1 {
+		t.Fatalf("got %d links, want 1", len(links))
+	}
+	want := strings.Index(in, "https://example.com")
+	if links[0].Start != want {
+		t.Fatalf("start = %d, want the byte offset %d", links[0].Start, want)
+	}
+	if got := in[links[0].Start:links[0].End]; got != "https://example.com" {
+		t.Fatalf("offsets select %q", got)
 	}
 }
 

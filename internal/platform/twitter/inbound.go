@@ -60,6 +60,7 @@ func (a *Adapter) poll(ctx context.Context, sink chan<- model.Post) (time.Durati
 			tw.TweetFieldText,
 			tw.TweetFieldAttachments,
 			tw.TweetFieldCreatedAt,
+			tw.TweetFieldEntities,
 			tw.TweetFieldInReplyToUserID,
 			tw.TweetFieldLanguage,
 			tw.TweetFieldReferencedTweets,

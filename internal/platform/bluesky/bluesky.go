@@ -19,6 +19,7 @@ import (
 	"github.com/andrinoff/xmbbridge/internal/config"
 	"github.com/andrinoff/xmbbridge/internal/model"
 	"github.com/andrinoff/xmbbridge/internal/platform"
+	"github.com/andrinoff/xmbbridge/internal/text"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
@@ -215,6 +216,7 @@ func (a *Adapter) Post(ctx context.Context, out model.Outbound, media []model.Pr
 	record := &bsky.FeedPost{
 		CreatedAt: createdAt(out.CreatedAt),
 		Text:      out.Text,
+		Facets:    linkFacets(out.Text),
 	}
 	if out.Lang != "" {
 		record.Langs = []string{out.Lang}
@@ -246,6 +248,30 @@ func (a *Adapter) Post(ctx context.Context, out model.Outbound, media []model.Pr
 		return "", fmt.Errorf("bluesky: create record: %w", err)
 	}
 	return result.Uri, nil
+}
+
+// linkFacets annotates every URL in the post text so Bluesky clients render
+// it as a clickable hyperlink. Without facets the text stays inert: Bluesky
+// does not linkify plain text on its own. Facet offsets are byte positions
+// into the UTF-8 text, which FindLinks reports directly.
+func linkFacets(body string) []*bsky.RichtextFacet {
+	links := text.FindLinks(body)
+	if len(links) == 0 {
+		return nil
+	}
+	facets := make([]*bsky.RichtextFacet, 0, len(links))
+	for _, link := range links {
+		facets = append(facets, &bsky.RichtextFacet{
+			Index: &bsky.RichtextFacet_ByteSlice{
+				ByteStart: int64(link.Start),
+				ByteEnd:   int64(link.End),
+			},
+			Features: []*bsky.RichtextFacet_Features_Elem{
+				{RichtextFacet_Link: &bsky.RichtextFacet_Link{Uri: link.URL}},
+			},
+		})
+	}
+	return facets
 }
 
 // buildEmbed uploads attachments and assembles the post's embed. Video wins

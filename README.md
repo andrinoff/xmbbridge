@@ -24,6 +24,10 @@ the OAuth 1.0a keys configured, X also becomes a destination.
   - X: polls your user timeline (`since_id` cursor), honouring rate-limit headers.
 - **Writes** each post to every other enabled platform, truncating text to fit and
   re-encoding media to fit each destination's limits.
+- **Keeps links usable.** X wraps every link in a `t.co` redirect; the bridge swaps
+  those back to the URLs they point at (links to a post's own media are dropped,
+  since the media is re-attached), and URLs are annotated as links on Bluesky,
+  which does not linkify plain text on its own.
 - **Never echoes its own output.** Every post the bridge creates is recorded against the
   post it came from; when a listener later sees that post it recognises it as its own
   work and stops. Without this a two-way bridge would copy the same post forever.
@@ -160,11 +164,15 @@ prints a credential-check command that runs `-check` as the service user.
 
 ### systemd, step by step
 
-If you would rather do it by hand:
+If you would rather do it by hand, build as your own user and only use `sudo` to install.
+Building straight into `/usr/local/bin` fails unless that step runs as root:
 
 ```bash
 sudo apt install -y ffmpeg
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/bridge ./cmd/bridge
+
+# Build as the invoking user, then install with sudo.
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bridge ./cmd/bridge
+sudo install -m 0755 bridge /usr/local/bin/bridge
 
 sudo useradd --system --home-dir /var/lib/xmbbridge --create-home --shell /usr/sbin/nologin xmbbridge
 sudo install -d -o xmbbridge -g xmbbridge /var/lib/xmbbridge
@@ -175,9 +183,42 @@ sudo install -m 600 -o xmbbridge -g xmbbridge /dev/null /etc/xmbbridge/xmbbridge
 sudo cp deploy/xmbbridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now xmbbridge
+
+# If the binary was missing the first time, the unit is already enabled but
+# has to be started once the binary is in place:
+sudo systemctl restart xmbbridge
 ```
 
 The bridge only needs outbound network access and a writable state directory.
+
+### Troubleshooting
+
+- **`apt-get update` fails with "does not have a Release file"** — a third-party PPA has no
+  packages for your Ubuntu release. Remove it and re-run the installer:
+  ```bash
+  sudo add-apt-repository --remove ppa:AUTHOR/PPA
+  sudo apt-get update
+  ```
+  or delete the matching files (the single trailing wildcard covers both formats):
+  ```bash
+  sudo rm -f /etc/apt/sources.list.d/NAME-OF-PPA-*
+  ```
+  (Under fish, quote or single-glob patterns: a non-matching glob aborts before `rm` runs.)
+- **`go build ... permission denied` writing `/usr/local/bin/bridge`** — the build was run as
+  a normal user while targeting a root-owned directory. Build locally and install with sudo:
+  ```bash
+  go build -trimpath -ldflags="-s -w" -o bridge ./cmd/bridge
+  sudo install -m 0755 bridge /usr/local/bin/bridge
+  sudo systemctl restart xmbbridge
+  ```
+- **`The service restarts but the logs show credential errors`** — run the offline check as the
+  service user:
+  ```bash
+  sudo -u xmbbridge /usr/local/bin/bridge -config /etc/xmbbridge/config.yaml -check
+  ```
+  Each platform reports whether its credentials authenticate.
+- **X writes return 403** — the app's permission level was changed after the access token was
+  generated. Regenerate the Access Token and Secret under Read and write permissions.
 
 ### Command line
 

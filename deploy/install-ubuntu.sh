@@ -37,8 +37,14 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 log "Installing runtime dependencies (ffmpeg, ca-certificates)"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ffmpeg ca-certificates curl tar >/dev/null
+if ! apt-get update -qq; then
+  warn "apt-get update reported errors (usually a third-party PPA without packages"
+  warn "for this Ubuntu release); continuing with the package lists already present"
+fi
+apt-get install -y -qq ffmpeg ca-certificates curl tar >/dev/null || die "\
+could not install the runtime dependencies. Run 'sudo apt-get update' and resolve
+the repository errors first (a PPA with 'does not have a Release file' is the
+usual culprit), then re-run this script."
 
 # --- Go toolchain -----------------------------------------------------------
 # Only fetch the official toolchain when the one on PATH cannot build the
@@ -62,12 +68,24 @@ fi
 export PATH=/usr/local/go/bin:$PATH
 
 # --- Build ------------------------------------------------------------------
+# Build into a scratch directory and install the result. Building straight into
+# $BIN fails with "permission denied" whenever the build is not run with the
+# privileges that directory requires.
 log "Building $(basename "$BIN")"
+build_dir=$(mktemp -d)
+trap 'rm -rf "$build_dir"' EXIT
+
 (
   cd "$REPO_ROOT"
-  CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$BIN" ./cmd/bridge
+  CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$build_dir/bridge" ./cmd/bridge
 )
-chmod 0755 "$BIN"
+[[ -x $build_dir/bridge ]] || die "the build produced no binary"
+
+if [[ -e $BIN && ! -w $BIN ]]; then
+  die "$BIN exists but is not writable by $(id -un); re-run this script with sudo"
+fi
+install -m 0755 "$build_dir/bridge" "$BIN" \
+  || die "could not install the binary to $BIN"
 
 # --- User and directories ---------------------------------------------------
 if id "$SERVICE_NAME" >/dev/null 2>&1; then
