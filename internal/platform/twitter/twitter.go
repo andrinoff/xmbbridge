@@ -252,18 +252,37 @@ func mediaFromTweet(item *tw.MediaObj) model.Media {
 		attachment.Kind = model.MediaImage
 		attachment.URL = item.URL
 	case "video":
-		// The v2 API does not expose a downloadable video file, only the
-		// poster frame; the bridge carries the poster across.
+		// Without an MP4 variant the engine falls back to the poster frame.
 		attachment.Kind = model.MediaVideo
+		attachment.URL, attachment.MimeType = bestMP4(item.Variants)
 	case "animated_gif":
-		// The URL for an animated_gif is the looping MP4 file itself.
 		attachment.Kind = model.MediaGIF
-		attachment.URL = item.URL
+		attachment.URL, attachment.MimeType = bestMP4(item.Variants)
+		if attachment.URL == "" {
+			attachment.URL = item.URL
+		}
 	default:
 		attachment.Kind = model.MediaImage
 		attachment.URL = item.URL
 	}
 	return attachment
+}
+
+// bestMP4 picks the highest-bitrate MP4 among a video's playback variants.
+func bestMP4(variants []*tw.MediaVariantObj) (string, string) {
+	var best *tw.MediaVariantObj
+	for _, variant := range variants {
+		if variant == nil || variant.URL == "" || variant.ContentType != "video/mp4" {
+			continue
+		}
+		if best == nil || variant.BitRate > best.BitRate {
+			best = variant
+		}
+	}
+	if best == nil {
+		return "", ""
+	}
+	return best.URL, best.ContentType
 }
 
 func parseTime(raw string) time.Time {

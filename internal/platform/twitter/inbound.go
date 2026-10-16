@@ -72,6 +72,7 @@ func (a *Adapter) poll(ctx context.Context, sink chan<- model.Post) (time.Durati
 			tw.MediaFieldWidth,
 			tw.MediaFieldHeight,
 			tw.MediaFieldAltText,
+			tw.MediaFieldVariants,
 		},
 	}
 	if cursor != "" {

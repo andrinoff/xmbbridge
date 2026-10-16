@@ -262,9 +262,9 @@ account with video disabled can be configured without touching code.
   fit the destination's byte budget (Bluesky caps image blobs at 2MB); video is
   transcoded to H.264/AAC MP4 with duration and resolution capped. An attachment that
   cannot be made to fit is dropped with a warning and the text still goes out.
-- **X video becomes its poster frame.** The v2 API exposes no downloadable video file for
-  tweets, only a preview image, so X videos are copied as still images. Animated GIFs do
-  have a real MP4 URL and are transcoded normally. Video **into** X uses the chunked
+- **X video uses its best MP4 variant.** Videos and animated GIFs from X are downloaded
+  at the highest-bitrate MP4 and transcoded; the poster frame is only used if no MP4 is
+  offered or transcoding fails. Video **into** X uses the chunked
   upload endpoint with a 140 second cap and alt text is attached where available.
 - **Truncation to 280 characters** on X is rune-based and conservative: X counts URLs as
   23 characters regardless of length, so a post that barely fits elsewhere may be cut

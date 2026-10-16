@@ -231,6 +231,11 @@ func TestToPostAttachesMedia(t *testing.T) {
 			Key: "13_video", Type: "video",
 			PreviewImageURL: "https://pbs.twimg.com/media/video-poster.jpg",
 			AltText:         "a clip",
+			Variants: []*tw.MediaVariantObj{
+				{ContentType: "application/x-mpegURL", URL: "https://video.twimg.com/pl.m3u8"},
+				{ContentType: "video/mp4", BitRate: 832000, URL: "https://video.twimg.com/low.mp4"},
+				{ContentType: "video/mp4", BitRate: 2176000, URL: "https://video.twimg.com/high.mp4"},
+			},
 		},
 		"16_gif": {
 			Key: "16_gif", Type: "animated_gif",
@@ -253,14 +258,12 @@ func TestToPostAttachesMedia(t *testing.T) {
 		t.Fatalf("photo metadata = %+v", photo)
 	}
 
-	// A video has no downloadable file through the API, so it is carried as a
-	// video with only a poster frame.
 	video := post.Media[1]
 	if video.Kind != model.MediaVideo {
 		t.Fatalf("video kind = %q", video.Kind)
 	}
-	if video.URL != "" {
-		t.Fatalf("a video should not claim a downloadable URL, got %q", video.URL)
+	if video.URL != "https://video.twimg.com/high.mp4" || video.MimeType != "video/mp4" {
+		t.Fatalf("video should use the best mp4 variant, got %q (%q)", video.URL, video.MimeType)
 	}
 	if video.PosterURL != "https://pbs.twimg.com/media/video-poster.jpg" {
 		t.Fatalf("video poster = %q", video.PosterURL)
