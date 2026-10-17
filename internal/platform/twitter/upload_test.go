@@ -108,6 +108,10 @@ func (f *fakeUpload) handler() http.Handler {
 				}
 				writeJSON(w, http.StatusOK, response)
 			case "STATUS":
+				if r.Method != http.MethodGet {
+					http.Error(w, "STATUS must be GET", http.StatusMethodNotAllowed)
+					return
+				}
 				f.commands = append(f.commands, "STATUS")
 				writeJSON(w, http.StatusOK, map[string]any{
 					"media_id":        atoiOrDefault(form["media_id"]),

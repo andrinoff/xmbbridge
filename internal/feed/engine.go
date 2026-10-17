@@ -331,6 +331,11 @@ func (e *Engine) prepareVideo(ctx context.Context, attachment model.Media, limit
 		e.log.Warn("video could not be prepared, falling back to its poster frame", "error", err)
 		return e.preparePoster(ctx, attachment, limits, base)
 	}
+	// Transcoding preserves aspect ratio; the source's dimensions beat the
+	// transcoder's 16:9 guess (Bluesky letterboxes by them).
+	if attachment.Width > 0 && attachment.Height > 0 {
+		result.Width, result.Height = attachment.Width, attachment.Height
+	}
 	return model.PreparedMedia{
 		Kind:     model.MediaVideo,
 		Bytes:    result.Bytes,

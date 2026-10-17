@@ -244,12 +244,14 @@ func (u *uploader) awaitProcessing(ctx context.Context, result mediaUploadResult
 			return fmt.Errorf("media %s was still %s after %s", mediaID, state, processingPollCeiling)
 		}
 
-		form := url.Values{}
-		form.Set("command", "STATUS")
-		form.Set("media_id", mediaID)
-
+		// STATUS is the one upload command X only accepts as a GET.
+		endpoint := u.host + "/1.1/media/upload.json?command=STATUS&media_id=" + url.QueryEscape(mediaID)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return fmt.Errorf("build status request: %w", err)
+		}
 		var status mediaUploadResult
-		if err := u.postForm(ctx, form, &status); err != nil {
+		if err := u.do(req, &status); err != nil {
 			return fmt.Errorf("check media status: %w", err)
 		}
 		result = status

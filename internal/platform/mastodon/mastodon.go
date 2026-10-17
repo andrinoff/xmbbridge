@@ -4,8 +4,10 @@ package mastodon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/andrinoff/xmbbridge/internal/config"
@@ -18,6 +20,9 @@ import (
 
 // TextMax is the conventional Mastodon post limit; most instances enforce it.
 const TextMax = 500
+
+// mediaPollInterval spaces out checks on an upload still being processed.
+var mediaPollInterval = 3 * time.Second
 
 // Options configures the adapter.
 type Options struct {
@@ -108,6 +113,13 @@ func (a *Adapter) Post(ctx context.Context, out model.Outbound, media []model.Pr
 		if err != nil {
 			return "", fmt.Errorf("upload attachment %d: %w", i, err)
 		}
+		// Video is processed asynchronously (202, no URL yet) and a status
+		// cannot attach it until GET /media/:id stops answering 206.
+		if attachment.URL == "" {
+			if err := a.awaitMedia(ctx, attachment); err != nil {
+				return "", fmt.Errorf("attachment %d: %w", i, err)
+			}
+		}
 		mediaIDs = append(mediaIDs, attachment.ID)
 	}
 
@@ -128,6 +140,29 @@ func (a *Adapter) Post(ctx context.Context, out model.Outbound, media []model.Pr
 		return "", fmt.Errorf("post status: %w", err)
 	}
 	return string(status.ID), nil
+}
+
+// awaitMedia polls until the instance has finished processing an upload.
+func (a *Adapter) awaitMedia(ctx context.Context, attachment *mastodon.Attachment) error {
+	deadline := time.Now().Add(10 * time.Minute)
+	for {
+		err := a.client.GetMediaStatus(ctx, attachment)
+		if err == nil {
+			return nil
+		}
+		// Only 206 means "still processing"; any other answer is not worth
+		// waiting on, and posting will surface a real problem.
+		var apiErr *mastodon.APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusPartialContent {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("media %s still not processed: %w", attachment.ID, err)
+		}
+		if err := platform.Sleep(ctx, mediaPollInterval); err != nil {
+			return err
+		}
+	}
 }
 
 // toPost converts a Mastodon status into the bridge's neutral form.

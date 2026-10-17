@@ -1,6 +1,10 @@
 package mastodon
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -156,5 +160,42 @@ func TestLimitsReflectConfiguration(t *testing.T) {
 	}
 	if !limits.Video {
 		t.Fatal("video should be enabled")
+	}
+}
+
+func TestPostWaitsForVideoProcessing(t *testing.T) {
+	mediaPollInterval = time.Millisecond
+	checks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/media":
+			w.WriteHeader(http.StatusAccepted)
+			fmt.Fprint(w, `{"id":"7","type":"video","url":null}`)
+		case "/api/v1/media/7":
+			checks++
+			if checks < 3 {
+				w.WriteHeader(http.StatusPartialContent)
+			}
+			fmt.Fprint(w, `{"id":"7"}`)
+		case "/api/v1/statuses":
+			if checks < 3 {
+				http.Error(w, "media not processed", http.StatusUnprocessableEntity)
+				return
+			}
+			fmt.Fprint(w, `{"id":"99"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := New(Options{Config: config.MastodonConfig{Server: server.URL, AccessToken: "t"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := adapter.Post(context.Background(), model.Outbound{Text: "clip"},
+		[]model.PreparedMedia{{Kind: model.MediaVideo, Bytes: []byte("mp4"), MimeType: "video/mp4"}})
+	if err != nil || id != "99" {
+		t.Fatalf("Post = %q, %v", id, err)
 	}
 }
